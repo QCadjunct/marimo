@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.12
-FROM python:3.13-slim AS base
+FROM python:3.13-slim AS base 
 
 # Make `uv` and `uvx` available in the PATH for all target images
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -36,4 +36,5 @@ CMD marimo edit --no-token -p $PORT --host $HOST
 # -sql entry point, extends -data
 FROM data AS sql
 RUN uv pip install --no-cache-dir marimo[recommended,lsp,sql]
-CMD marimo edit --no-token -p $PORT --host $HOST
+CMD marimo edit --no-token -p $PORT --host $HOSTGreat idea! Here's a more complete and well-documented Docker run command:
+# -full entry point, extends -sql

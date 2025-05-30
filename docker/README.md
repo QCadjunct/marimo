@@ -17,7 +17,7 @@ To build all images, from the root
 docker build -t my_app . -f docker/Dockerfile
 
 # Start your container, mapping port 8080
-docker run -p 8080:8080 -it my_app
+docker run -p 18080:8080 -it my_app
 
 # Visit http://localhost:8080
 ```
