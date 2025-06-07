@@ -267,8 +267,9 @@ extra-dependencies = [
     # For testing clickhouse
     "chdb>=3; platform_system != 'Windows'", # there is no suitable wheel for windows
     "clickhouse-connect>=0.8.17",
+    "redshift-connector[full]>=2.1.7",
     "pandas>=1.5.3",
-    "hvplot~=0.11.2",
+    "hvplot~=0.11.3",
     # Causes issues installing `shapely` (v2.0.7)
     # "geopandas~=1.0.1; python_version > '3.9'",
     # FOr testing sql
@@ -279,9 +280,9 @@ extra-dependencies = [
     "ipython~=8.12.3",
     # testing gen ai
     "openai>=1.55.3",
-    "anthropic==0.34.1",
+    "anthropic==0.52.2; python_version > '3.9'",
     "google-generativeai==0.8.5",
-    "boto3>=1.38.19",
+    "boto3>=1.38.25",
     "litellm>=1.70.0",
     # exporting as ipynb
     "nbformat >=5.10.4",
@@ -329,6 +330,7 @@ exclude = [
     "tests/_cli/ipynb_data",
     "tests/_runtime/runtime_data",
     "tests/_ast/test_app.py",
+    "tests/_convert/ipynb_data/*.ipynb",
     "frontend",
     "docs",
     "build",
@@ -460,6 +462,8 @@ banned-module-level-imports = [
     "sqlglot",
     "tomlkit",
     "typing_extensions",
+    "pyiceberg",
+    "redshift_connector",
 ]
 
 [tool.ruff.lint.flake8-pytest-style]
@@ -514,6 +518,7 @@ extend-exclude = [
     "**/snapshots/*",
     "**/__demo__/*",
     "base64.test.ts",
+    "SECURITY.md", # Contains usernames that trigger typos
 ]
 
 [tool.black]

@@ -14,8 +14,9 @@ from typing import (
 )
 
 from marimo import __version__, _loggers
-from marimo._ast.cell import Cell, CellConfig, CellImpl
+from marimo._ast.cell import Cell, CellImpl
 from marimo._ast.names import DEFAULT_CELL_NAME, is_internal_cell_name
+from marimo._ast.visitor import Language
 from marimo._config.config import (
     DEFAULT_CONFIG,
     DisplayConfig,
@@ -28,8 +29,9 @@ from marimo._messaging.cell_output import CellChannel, CellOutput
 from marimo._messaging.mimetypes import KnownMimeType
 from marimo._runtime import dataflow
 from marimo._runtime.virtual_file import read_virtual_file
+from marimo._schemas.serialization import NotebookSerializationV1
 from marimo._server.export.utils import (
-    get_app_title,
+    format_filename_title,
     get_download_filename,
     get_filename,
     get_markdown_from_cell,
@@ -37,12 +39,17 @@ from marimo._server.export.utils import (
 )
 from marimo._server.file_manager import AppFileManager
 from marimo._server.models.export import ExportAsHTMLRequest
+from marimo._server.session.serialize import (
+    serialize_notebook,
+    serialize_session_view,
+)
 from marimo._server.session.session_view import SessionView
 from marimo._server.templates.templates import (
     static_notebook_template,
     wasm_notebook_template,
 )
 from marimo._server.tokens import SkewProtectionToken
+from marimo._types.ids import CellId_t
 from marimo._utils.data_uri import build_data_url
 from marimo._utils.marimo_path import MarimoPath
 from marimo._utils.paths import marimo_package_path
@@ -67,8 +74,7 @@ class Exporter:
     ) -> tuple[str, str]:
         index_html = get_html_contents()
 
-        cell_ids = list(file_manager.app.cell_manager.cell_ids())
-        filename = get_filename(file_manager)
+        filename = get_filename(file_manager.filename)
 
         files: dict[str, str] = {}
         for filename_and_length in request.files:
@@ -97,18 +103,20 @@ class Exporter:
         config = deep_copy(DEFAULT_CONFIG)
         config["display"] = display_config
 
-        # code and console outputs are grouped together, but
-        # we can split them up in the future if desired.
-        if request.include_code:
-            code = file_manager.to_code()
-            codes = file_manager.app.cell_manager.codes()
-            configs = file_manager.app.cell_manager.configs()
-            console_outputs = session_view.get_cell_console_outputs(cell_ids)
-        else:
+        session_snapshot = serialize_session_view(session_view)
+        notebook_snapshot = serialize_notebook(
+            session_view, file_manager.app.cell_manager
+        )
+        if not request.include_code:
             code = ""
-            codes = ["" for _ in cell_ids]
-            configs = [CellConfig() for _ in cell_ids]
-            console_outputs = {}
+            # Clear code and console outputs
+            for cell in notebook_snapshot["cells"]:
+                cell["code"] = ""
+                cell["name"] = ""
+            for output in session_snapshot["cells"]:
+                output["console"] = []
+        else:
+            code = file_manager.to_code()
 
         # We include the code hash regardless of whether we include the code
         code_hash = hash_code(file_manager.to_code())
@@ -122,17 +130,15 @@ class Exporter:
             filepath=file_manager.filename,
             code=code,
             code_hash=code_hash,
-            cell_ids=cell_ids,
-            cell_names=list(file_manager.app.cell_manager.names()),
-            cell_codes=list(codes),
-            cell_configs=list(configs),
-            cell_outputs=session_view.get_cell_outputs(cell_ids),
-            cell_console_outputs=console_outputs,
+            session_snapshot=session_snapshot,
+            notebook_snapshot=notebook_snapshot,
             files=files,
             asset_url=request.asset_url,
         )
 
-        download_filename = get_download_filename(file_manager, "html")
+        download_filename = get_download_filename(
+            file_manager.filename, "html"
+        )
         return html, download_filename
 
     def export_as_script(
@@ -157,7 +163,9 @@ class Exporter:
         ]
         code = f'\n__generated_with = "{__version__}"\n\n' + "\n\n".join(codes)
 
-        download_filename = get_download_filename(file_manager, "script.py")
+        download_filename = get_download_filename(
+            file_manager.filename, "script.py"
+        )
         return code, download_filename
 
     def export_as_ipynb(
@@ -220,28 +228,36 @@ class Exporter:
         stream = io.StringIO()
         nbformat.write(notebook, stream)  # type: ignore[no-untyped-call]
         stream.seek(0)
-        download_filename = get_download_filename(file_manager, "ipynb")
+        download_filename = get_download_filename(
+            file_manager.filename, "ipynb"
+        )
         return stream.read(), download_filename
 
     def export_as_md(
-        self, file_manager: AppFileManager, previous: Path | None = None
+        self,
+        notebook: NotebookSerializationV1,
+        filename: Optional[str],
+        previous: Path | None = None,
     ) -> tuple[str, str]:
         from marimo._ast import codegen
         from marimo._ast.app_config import _AppConfig
-        from marimo._ast.cell import Cell
         from marimo._ast.compiler import compile_cell
-        from marimo._cli.convert.markdown import (
+        from marimo._convert.markdown.markdown import (
             extract_frontmatter,
             formatted_code_block,
             is_sanitized_markdown,
         )
         from marimo._utils import yaml
 
-        filename = get_filename(file_manager)
+        filename = get_filename(filename)
+        app_title = notebook.app.options.get("app_title", None)
+        if not app_title:
+            app_title = format_filename_title(filename)
+
         metadata: dict[str, str | list[str]] = {}
         metadata.update(
             {
-                "title": get_app_title(file_manager),
+                "title": app_title,
                 "marimo-version": __version__,
             }
         )
@@ -255,7 +271,7 @@ class Exporter:
         metadata.update(
             {
                 k: v
-                for k, v in file_manager.app.config.asdict().items()
+                for k, v in notebook.app.options.items()
                 if k not in ignored_keys and v != default_config.get(k)
             }
         )
@@ -266,7 +282,7 @@ class Exporter:
             if header:
                 metadata["header"] = header.strip()
         else:
-            header_file = previous if previous else file_manager.filename
+            header_file = previous if previous else filename
             if header_file:
                 with open(header_file, encoding="utf-8") as f:
                     _metadata, _ = extract_frontmatter(f.read())
@@ -297,42 +313,37 @@ class Exporter:
         )
         document = ["---", header.strip(), "---", ""]
         previous_was_markdown = False
-        for cell_data in file_manager.app.cell_manager.cell_data():
-            cell = cell_data.cell
-            code = cell_data.code
+
+        for cell in notebook.cells:
+            code = cell.code
             # Config values are opt in, so only include if they are set.
-            attributes = cell_data.config.asdict()
+            attributes = cell.options
             # Allow for attributes like column index.
             attributes = {
                 k: repr(v).lower() for k, v in attributes.items() if v
             }
-            if not is_internal_cell_name(cell_data.name):
-                attributes["name"] = cell_data.name
+            if not is_internal_cell_name(cell.name):
+                attributes["name"] = cell.name
+
             # No "cell" typically means not parseable. However newly added
             # cells require compilation before cell is set.
             # TODO: Refactor so it doesn't occur in export (codegen
             # does this too)
             # NB. Also need to recompile in the sql case since sql parsing is
             # cached.
-            if not cell or cell._cell.language == "sql":
-                try:
-                    cell_impl = compile_cell(
-                        code, cell_id=cell_data.cell_id
-                    ).configure(cell_data.config)
-                    cell = Cell(
-                        _cell=cell_impl,
-                        _name=cell_data.name,
-                        _app=file_manager.app,
-                    )
-                    cell_data.cell = cell
-                except SyntaxError:
-                    pass
+            language: Language = "python"
+            cell_impl: CellImpl | None = None
+            try:
+                cell_impl = compile_cell(code, cell_id=CellId_t("dummy"))
+                language = cell_impl.language
+            except SyntaxError:
+                pass
 
-            if cell:
+            if cell_impl:
                 # Markdown that starts a column is forced to code.
                 column = attributes.get("column", None)
                 if not column or column == "0":
-                    markdown = get_markdown_from_cell(cell, code)
+                    markdown = get_markdown_from_cell(cell_impl, code)
                     # Unsanitized markdown is forced to code.
                     if markdown and is_sanitized_markdown(markdown):
                         # Use blank HTML comment to separate markdown codeblocks
@@ -341,11 +352,13 @@ class Exporter:
                         previous_was_markdown = True
                         document.append(markdown)
                         continue
-                attributes["language"] = cell._cell.language
+                attributes["language"] = language
                 # Definitely a code cell, but need to determine if it can be
                 # formatted as non-python.
                 if attributes["language"] == "sql":
-                    sql_options = get_sql_options_from_cell(code)
+                    sql_options: dict[str, str] | None = (
+                        get_sql_options_from_cell(code)
+                    )
                     if not sql_options:
                         # means not sql.
                         attributes.pop("language")
@@ -354,7 +367,7 @@ class Exporter:
                         if sql_options.get("query") == "_df":
                             sql_options.pop("query")
                         attributes.update(sql_options)
-                        code = "\n".join(cell._cell.raw_sqls).strip()
+                        code = "\n".join(cell_impl.raw_sqls).strip()
 
             # Definitely no "cell"; as such, treat as code, as everything in
             # marimo is code.
@@ -366,7 +379,7 @@ class Exporter:
             previous_was_markdown = False
             document.append(formatted_code_block(code, attributes))
 
-        download_filename = get_download_filename(file_manager, "md")
+        download_filename = get_download_filename(filename, "md")
         return "\n".join(document).strip(), download_filename
 
     def export_as_wasm(
@@ -381,7 +394,7 @@ class Exporter:
     ) -> tuple[str, str]:
         """Export notebook as a WASM-powered standalone HTML file."""
         index_html = get_html_contents()
-        filename = get_filename(file_manager)
+        filename = get_filename(file_manager.filename)
 
         # We only want to pass the display config in the static notebook
         config: MarimoConfig = deep_copy(DEFAULT_CONFIG)
@@ -402,7 +415,9 @@ class Exporter:
             show_code=show_code,
         )
 
-        download_filename = get_download_filename(file_manager, "wasm.html")
+        download_filename = get_download_filename(
+            file_manager.filename, "wasm.html"
+        )
 
         return html, download_filename
 
@@ -463,8 +478,8 @@ class AutoExporter:
 
     def save_html(self, file_manager: AppFileManager, html: str) -> None:
         # get filename
-        directory = Path(get_filename(file_manager)).parent
-        filename = get_download_filename(file_manager, "html")
+        directory = Path(get_filename(file_manager.filename)).parent
+        filename = get_download_filename(file_manager.filename, "html")
 
         # make directory if it doesn't exist
         self._make_export_dir(directory)
@@ -475,8 +490,8 @@ class AutoExporter:
 
     def save_md(self, file_manager: AppFileManager, markdown: str) -> None:
         # get filename
-        directory = Path(get_filename(file_manager)).parent
-        filename = get_download_filename(file_manager, "md")
+        directory = Path(get_filename(file_manager.filename)).parent
+        filename = get_download_filename(file_manager.filename, "md")
 
         # make directory if it doesn't exist
         self._make_export_dir(directory)
@@ -487,8 +502,8 @@ class AutoExporter:
 
     def save_ipynb(self, file_manager: AppFileManager, ipynb: str) -> None:
         # get filename
-        directory = Path(get_filename(file_manager)).parent
-        filename = get_download_filename(file_manager, "ipynb")
+        directory = Path(get_filename(file_manager.filename)).parent
+        filename = get_download_filename(file_manager.filename, "ipynb")
 
         # make directory if it doesn't exist
         self._make_export_dir(directory)

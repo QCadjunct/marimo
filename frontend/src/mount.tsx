@@ -29,7 +29,16 @@ import {
 } from "@/core/meta/state";
 import { appConfigAtom, userConfigAtom } from "@/core/config/config";
 import { configOverridesAtom } from "@/core/config/config";
+import {
+  DEFAULT_RUNTIME_CONFIG,
+  runtimeConfigAtom,
+} from "./core/runtime/config";
 import { getMarimoCode } from "@/core/meta/globals";
+import type * as api from "@marimo-team/marimo-api";
+import { notebookAtom } from "./core/cells/cells";
+import { notebookStateFromSession } from "./core/cells/session";
+import type { FileStore } from "./core/wasm/store";
+import { notebookFileStore } from "./core/wasm/store";
 
 let hasMounted = false;
 
@@ -173,6 +182,51 @@ const mountOptionsSchema = z.object({
     .string()
     .nullish()
     .transform((val) => val ?? ""),
+
+  /**
+   * File stores for persistence
+   */
+  fileStores: z.array(z.custom<FileStore>()).optional(),
+
+  /**
+   * Serialized Session["NotebookSessionV1"] snapshot
+   */
+  session: z.union([
+    z.null().optional(),
+    z
+      .object({
+        // Rough shape, we don't need to validate the full schema
+        version: z.literal("1"),
+        metadata: z.any(),
+        cells: z.array(z.any()),
+      })
+      .passthrough()
+      .transform((val) => val as api.Session["NotebookSessionV1"]),
+  ]),
+
+  /**
+   * Serialized Notebook["NotebookV1"] snapshot
+   */
+  notebook: z.union([
+    z.null().optional(),
+    z
+      .object({
+        // Rough shape, we don't need to validate the full schema
+        version: z.literal("1"),
+        metadata: z.any(),
+        cells: z.array(z.any()),
+      })
+      .passthrough()
+      .transform((val) => val as api.Notebook["NotebookV1"]),
+  ]),
+
+  /**
+   * Runtime configs
+   */
+  runtimeConfig: z
+    .array(z.object({ url: z.string() }))
+    .nullish()
+    .transform((val) => val ?? []),
 });
 
 function initStore(options: unknown) {
@@ -181,8 +235,24 @@ function initStore(options: unknown) {
     Logger.error("Invalid marimo mount options", parsedOptions.error);
     throw new Error("Invalid marimo mount options");
   }
-  const mode = parsedOptions.data.mode as AppMode;
+  const mode = parsedOptions.data.mode;
   preloadPage(mode);
+
+  // Initialize file stores if provided
+  if (
+    parsedOptions.data.fileStores &&
+    parsedOptions.data.fileStores.length > 0
+  ) {
+    Logger.log("🗄️ Initializing file stores via mount...");
+    // Insert file stores at the beginning (highest priority)
+    // Insert in reverse order so first in array gets highest priority
+    for (let i = parsedOptions.data.fileStores.length - 1; i >= 0; i--) {
+      notebookFileStore.insert(0, parsedOptions.data.fileStores[i]);
+    }
+    Logger.log(
+      `🗄️ Injected ${parsedOptions.data.fileStores.length} file store(s) into notebookFileStore`,
+    );
+  }
 
   // Files
   store.set(filenameAtom, parsedOptions.data.filename);
@@ -202,6 +272,30 @@ function initStore(options: unknown) {
   );
   store.set(userConfigAtom, parseUserConfig(parsedOptions.data.config));
   store.set(appConfigAtom, parseAppConfig(parsedOptions.data.appConfig));
+
+  // Runtime config
+  if (parsedOptions.data.runtimeConfig.length > 0) {
+    const firstRuntimeConfig = parsedOptions.data.runtimeConfig[0];
+    Logger.debug("⚡ Runtime URL", firstRuntimeConfig.url);
+    store.set(runtimeConfigAtom, {
+      ...firstRuntimeConfig,
+      serverToken: parsedOptions.data.serverToken,
+    });
+  } else {
+    store.set(runtimeConfigAtom, {
+      ...DEFAULT_RUNTIME_CONFIG,
+      serverToken: parsedOptions.data.serverToken,
+    });
+  }
+
+  // Session/notebook
+  const notebook = notebookStateFromSession(
+    parsedOptions.data.session,
+    parsedOptions.data.notebook,
+  );
+  if (notebook) {
+    store.set(notebookAtom, notebook);
+  }
 }
 
 export const visibleForTesting = {

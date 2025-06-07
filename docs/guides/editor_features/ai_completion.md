@@ -180,9 +180,9 @@ To use AWS Bedrock with marimo:
 2. [Enable model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) for the specific models you want to use in the AWS Bedrock console.
 3. Install the boto3 Python client: `pip install boto3`
 4. Configure AWS credentials using one of these methods:
-   - AWS CLI: Run `aws configure` to set up credentials
-   - Environment variables: Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
-   - AWS credentials file at `~/.aws/credentials`
+   * AWS CLI: Run `aws configure` to set up credentials
+   * Environment variables: Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+   * AWS credentials file at `~/.aws/credentials`
 5. Add the following to your `marimo.toml`:
 
 ```toml title="marimo.toml"
@@ -198,7 +198,7 @@ model = "bedrock/anthropic.claude-3-sonnet-20240229"
 [ai.bedrock]
 region_name = "us-east-1" # AWS region where Bedrock is available
 # Optional AWS profile name (from ~/.aws/credentials)
-profile_name = "my-profile" 
+profile_name = "my-profile"
 ```
 
 If you're using an AWS named profile different from your default, specify the profile_name. For explicit credentials (not recommended), you can use environment variables instead.
@@ -230,7 +230,7 @@ You can use your GitHub Copilot for code refactoring or the chat panel. This req
 
 ```toml title="marimo.toml"
 [ai.open_ai]
-model = "gpt-4o"
+model = "gpt-4o-mini"
 api_key = "gho_..."
 base_url = "https://api.githubcopilot.com/"
 ```
@@ -264,13 +264,15 @@ Ollama allows you to run open-source LLMs on your local machine. To integrate Ol
 !!! note "Port already in use"
     If you get a "port already in use" error, you may need to close an existing Ollama instance. On Windows, click the up arrow in the taskbar, find the Ollama icon, and select "Quit". This is a known issue (see [Ollama Issue #3575](https://github.com/ollama/ollama/issues/3575)). Once you've closed the existing Ollama instance, you should be able to run `ollama serve` successfully.
 
-5. Open a new terminal and start marimo:
+5. Open a new terminal and install the openai client (e.g. `pip install openai`, `uv add openai`)
+
+6. Start marimo:
 
    ```bash
    marimo edit notebook.py
    ```
 
-6. Add the following to your `marimo.toml` (or configure in the UI settings in the editor):
+7. Add the following to your `marimo.toml` (or configure in the UI settings in the editor):
 
 ```toml title="marimo.toml"
 [ai.open_ai]
